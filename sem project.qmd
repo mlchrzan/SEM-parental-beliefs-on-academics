@@ -1,0 +1,388 @@
+---
+title: "sem project"
+author: "mlc"
+format: html
+editor: visual
+---
+
+# Setup
+
+```{r libraries, message=FALSE}
+library(tidyverse)
+library(naniar) # Missing Data
+library(janitor) # clean_names
+
+# From labs
+library(semPlot)
+library(lavaan)
+library(semptools)
+library(haven)
+library(labelled)
+library(psych)
+library(corrplot)
+```
+
+```{r read-data, message=FALSE}
+survey <- read_csv('survey_resp.csv')
+
+survey <- survey |>
+  select(!contains("sugg")) |>
+  mutate(across(where(is.character), as.factor), 
+         id = as.factor(id)) 
+
+## Test scores
+test_scores <- read_delim("test_scores.txt", delim = "^", col_names = TRUE)
+
+# Step 2: Write the data to a CSV file
+write_csv(test_scores, "test_scores.csv")
+
+# Step 3: Read the CSV file into a tibble
+test_scores <- read_csv("test_scores.csv")
+test_scores <- clean_names(test_scores)
+
+
+## School info
+schools <- read_delim("school_list.txt", delim = "^", col_names = TRUE)
+
+# Step 2: Write the data to a CSV file
+write_csv(schools, "schools.csv")
+
+# Step 3: Read the CSV file into a tibble
+schools <- read_csv("schools.csv")
+schools <- clean_names(schools)
+
+
+## Student group info
+students <- read_delim("StudentGroups.txt", delim = "^", col_names = TRUE)
+
+# Step 2: Write the data to a CSV file
+write_csv(students, "students.csv")
+
+# Step 3: Read the CSV file into a tibble
+students <- read_csv("students.csv")
+students <- clean_names(students)
+
+
+## Test info
+tests <- read_delim("Tests.txt", delim = "^", col_names = TRUE)
+
+# Step 2: Write the data to a CSV file
+write_csv(tests, "tests.csv")
+
+# Step 3: Read the CSV file into a tibble
+tests <- read_csv("tests.csv")
+tests <- clean_names(tests)
+```
+
+```{r join-testing-data}
+# Filter School info to just SFUSD schools
+# unique(test_scores$district_code)
+schools <- schools |> 
+  filter(district_code == 68478)
+
+
+test_scores_stud <- students |> 
+  select(-demographic_id) |> 
+  right_join(test_scores, 
+            by = join_by(demographic_id_num == student_group_id)) |> 
+  arrange(school_code) |> 
+  select(grade, test_id, demographic_id_num, demographic_name, 
+         student_group, everything(), 
+         -county_code, -filler) |> 
+  mutate(test_id = if_else(test_id == 1, 'SB ELA', 'SB Math'), 
+         district_code = as.character(district_code)) |> 
+  rename(test_subject = test_id)
+
+test_final <- left_join(test_scores_stud, schools, 
+                        by = join_by(district_code, school_code, 
+                                     test_year, type_id))
+
+rm(test_scores, test_scores_stud, schools, tests, students)
+test_final
+```
+
+```{r adjust-variable-types}
+# Make scores numeric
+test_final <- test_final |> 
+  mutate(across(total_tested_at_reporting_level:area_4_percentage_below_standard,
+                as.numeric))
+
+# Make identifiers factors
+test_final <- test_final |> 
+  mutate(across(c(test_subject:test_type, 
+                  type_id, 
+                  county_code,
+                  county_name, 
+                  district_name, 
+                  school_name,
+                  zip_code), 
+                  as.factor)) 
+
+
+# Remove unncessary vars
+test_final <- test_final |> 
+  select(-demographic_id_num, 
+         -filler)
+
+test_final
+```
+
+```{r filter-and-select-test-scores}
+# Filter out missing school names (for join)
+test_final <- test_final |> 
+  filter(!is.na(school_name))
+
+# Select Variables
+test_final <- test_final |> 
+  select(district_name, school_name, zip_code,
+         grade:mean_scale_score, students_with_scores, 
+         percentage_standard_met_and_above, type_id, 
+         county_code, county_name)
+
+test_final
+```
+
+```{r distributions, warning=FALSE, message=FALSE}
+survey |>
+  pivot_longer(cols = where(is.numeric) & !zip, 
+               names_to = "variable",
+               values_to = "value") |>
+  ggplot() +
+  geom_histogram(aes(value), binwidth = 0.5) +
+  facet_wrap(. ~ variable, 
+             scales = "free") 
+
+
+test_final |>
+  pivot_longer(cols = where(is.numeric) & !zip_code, 
+               names_to = "variable",
+               values_to = "value") |>
+  ggplot() +
+  geom_histogram(aes(value), binwidth = 0.5) +
+  facet_wrap(. ~ variable, 
+             scales = "free") 
+```
+
+```{r pivot-and-filter-survey}
+#Pivot to have all the school's in one column
+sur_long <- survey |> 
+  pivot_longer(cols = school_1:school_6, 
+               names_to = "school_num", 
+               values_to = "school") |> 
+  filter(!is.na(school))
+
+rm(survey)
+
+#Rearrange
+sur_long <- sur_long |> 
+  select(id, school, education, role, starts_with("eq"), starts_with("ex"), everything())
+
+sur_long <- sur_long |> 
+  mutate(education = if_else(education == "Graduate or professional degree (MA, MS, MBA, PhD, JD, MD, DDS etc.)", 
+                             'Graduate or professional degree', 
+                             education))
+
+sur_long <- sur_long |> droplevels()
+
+sur_long
+```
+
+```{r filter-and-select-survey}
+data <- sur_long |> 
+  select(id, race, user_lang, school, education, role, 
+         starts_with("eq"), starts_with("ex"), 
+          -equity, -excellence)
+
+rm(sur_long)
+
+data
+```
+
+# Exploration
+
+## Survey Data
+
+### Missing Data
+
+```{r missing-summary}
+naniar::miss_var_summary(data)
+naniar::gg_miss_var(data, show_pct = T)
+
+naniar::miss_var_summary(test_final)
+naniar::gg_miss_var(test_final, show_pct = T)
+```
+
+### Variable Summaries
+
+```{r summarize-vars-of-interest}
+data |> 
+  summarize(n = n(), 
+            .by = role)
+
+data |>  
+  summarize(n = n(), 
+            .by = education)
+
+# table(sur_long$education, sur_long$role)
+
+data |>  
+  summarize(n = n(), 
+            .by = c(education, role)) |> 
+  ggplot(aes(y = education, 
+             x = n)) + 
+  geom_col() + 
+  facet_wrap(~ role)
+```
+
+# Build SEM
+
+## Prep Data
+
+```{r filter}
+data <- data |> 
+  filter(role == 'Parent/Caregiver' | role == 'School site staff')
+```
+
+```{r reassign-all-missing}
+# Reassign NAs to Decline
+data <- data |> 
+  mutate(race = if_else(is.na(race), "Decline to State", race), 
+         race = as.factor(race), 
+         education = if_else(is.na(education), "Decline to State", education), 
+         education = as.factor(education), 
+         role = if_else(is.na(role), "Decline to state", role), 
+         role = as.factor(role))
+```
+
+```{r remove-declines}
+data <- data |> 
+  filter(if_all(everything(), ~ !str_detect(., "Decline to state")))
+
+data
+```
+
+```{r get-SFUSD-sch-codes, message=FALSE}
+sfusd_sch_data <- read_csv("UD_tblSSSI_20240503_130132.csv")
+
+# Select Needed Variables
+sfusd_sch_data <- sfusd_sch_data |> 
+  select(FULLNAME, CDS_COUNTY, CDS_DISTRICT, CDS_SCHOOL, ZIPCODE)
+
+# Join
+data <- left_join(data, sfusd_sch_data, 
+                  by = join_by(school == FULLNAME))
+
+rm(sfusd_sch_data)
+
+# Rename variables for future join
+data <- data |> 
+  rename(school_name = school, 
+         county_code = CDS_COUNTY, 
+         district_code = CDS_DISTRICT, 
+         school_code = CDS_SCHOOL, 
+         zip_code = ZIPCODE) |> 
+  mutate(across(county_code:zip_code, as.factor))
+
+data
+```
+
+```{r aggregate-survey}
+#Create Mode function to find the most common value that is not NA
+Mode <- function(x, na.rm = FALSE) {
+  if(na.rm){
+    x = x[!is.na(x)]
+  }
+
+  ux <- unique(x)
+  return(ux[which.max(tabulate(match(x, ux)))])
+}
+
+# Aggregate
+data_sch_level <- left_join(
+  # Aggregate counts of factor levels
+  data |> 
+    select(-id) |> 
+    mutate(school_name = as.factor(school_name)) |> 
+    select_if(is.factor) |> 
+    gather(key = "variable", 
+           value = "value", 
+           -school_name, 
+           -county_code, 
+           -district_code, 
+           -school_code, 
+           -zip_code) |> 
+    group_by(school_name,  
+             county_code, 
+             district_code, 
+             school_code, 
+             zip_code,
+             variable, value) |> 
+    summarise(num = n(), 
+              .groups = 'keep') |> 
+    unite("variable_value", variable, value, sep = "_") |> 
+    spread(key = "variable_value", value = num, fill = 0) |> 
+    ungroup()
+  
+  ,
+  
+  # Aggregate Numeric Variables
+  data |> 
+    group_by(school_name, district_code, school_code, zip_code) |> 
+    summarize(ed_level_most_common = Mode(education),
+              role_common_most_common = Mode(role), 
+              race_common_most_common = Mode(race), 
+              lang_common_most_common = Mode(user_lang), 
+              num_respondents = n_distinct(id),
+              across(where(is.numeric), ~mean(., na.rm = T)),
+              .groups = 'drop')
+)
+
+data_sch_level
+```
+
+```{r join-survey-test}
+data_final <- left_join(data_sch_level, test_final, 
+          by = join_by(county_code, district_code, school_code, zip_code)) 
+
+data_final
+```
+
+```{r create-outcome}
+data_final <- data_final |> 
+  group_by(school_code) |> 
+  mutate(avg_pct_met_and_above = mean(percentage_standard_met_and_above, 
+                                      na.rm = TRUE), 
+         avg_mean_scale_score = mean(mean_scale_score, 
+                                     na.rm = TRUE)) |> 
+  ungroup()
+
+data_final
+```
+
+```{r check-school-names}
+data_final |> 
+  select(school_name.x, school_name.y, school_code) |> distinct()
+
+data_final <- data_final |> 
+  select(-school_name.y) |> 
+  rename(school_name = school_name.x)
+
+rm(data, data_sch_level, test_final)
+data_final
+```
+
+## Build Model
+
+```{r remove-na}
+data_final |> na.omit()
+```
+
+```{r}
+
+```
+
+# Test Measurement Invariance
+
+```{r}
+
+```
