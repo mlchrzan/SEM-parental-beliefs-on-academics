@@ -200,8 +200,6 @@ data
 
 # Exploration
 
-## Survey Data
-
 ### Missing Data
 
 ```{r missing-summary}
@@ -238,7 +236,7 @@ data |>
 
 ## Prep Data
 
-```{r filter}
+```{r filter-survey}
 data <- data |> 
   filter(role == 'Parent/Caregiver' | role == 'School site staff')
 ```
@@ -250,13 +248,14 @@ data <- data |>
          race = as.factor(race), 
          education = if_else(is.na(education), "Decline to State", education), 
          education = as.factor(education), 
-         role = if_else(is.na(role), "Decline to state", role), 
+         role = if_else(is.na(role), "Decline to State", role), 
          role = as.factor(role))
 ```
 
 ```{r remove-declines}
 data <- data |> 
-  filter(if_all(everything(), ~ !str_detect(., "Decline to state")))
+  filter(if_all(everything(), ~ !str_detect(., "Decline to State"))) |> 
+  filter(if_all(everything(), ~ !str_detect(., "Prefer not to say")))
 
 data
 ```
@@ -297,6 +296,9 @@ Mode <- function(x, na.rm = FALSE) {
   return(ux[which.max(tabulate(match(x, ux)))])
 }
 
+# Drop levels
+data <- data |> droplevels()
+
 # Aggregate
 data_sch_level <- left_join(
   # Aggregate counts of factor levels
@@ -325,13 +327,13 @@ data_sch_level <- left_join(
   
   ,
   
-  # Aggregate Numeric Variables
+  # Aggregate remaining variables
   data |> 
     group_by(school_name, district_code, school_code, zip_code) |> 
     summarize(ed_level_most_common = Mode(education),
-              role_common_most_common = Mode(role), 
-              race_common_most_common = Mode(race), 
-              lang_common_most_common = Mode(user_lang), 
+              role_most_common = Mode(role), 
+              race_most_common = Mode(race), 
+              lang_most_common = Mode(user_lang), 
               num_respondents = n_distinct(id),
               across(where(is.numeric), ~mean(., na.rm = T)),
               .groups = 'drop')
@@ -359,30 +361,385 @@ data_final <- data_final |>
 data_final
 ```
 
-```{r check-school-names}
-data_final |> 
-  select(school_name.x, school_name.y, school_code) |> distinct()
+```{r create-education-level}
+data_final <- data_final |> 
+  clean_names() |> 
+  rename_with(~ sub("^education_", "ed_", .), starts_with("education_"))
+  
 
 data_final <- data_final |> 
-  select(-school_name.y) |> 
-  rename(school_name = school_name.x)
+  group_by(school_code) |> 
+  mutate(avg_yrs_ed = (ed_some_high_school_or_less*10 +
+           ed_high_school_diploma_or_ged*12 +
+           ed_associates_or_technical_degree*14 + 
+           ed_bachelor_s_degree*16 + 
+           ed_graduate_or_professional_degree*20)/num_respondents) |> 
+  ungroup()
 
-rm(data, data_sch_level, test_final)
+## Logic of weighted average
+# Assuming completes due to "some" category
+# Graduate/Professional Degree - +4, 20 years
+# Bachelors - +4, 16 years 
+# Associates - +2, 14 years
+# Some college but no degree - +2 (look up when folks dropout), 14 years
+# High School Diploma - +4, 12 years
+# Some HS or less - +2 (look up avg dropout), 10 years
+
 data_final
 ```
 
-## Build Model
+```{r check-school-names}
+data_final |> 
+  select(school_name_x, school_name_y, school_code) |> distinct()
 
-```{r remove-na}
-data_final |> na.omit()
+data_final <- data_final |> 
+  select(-school_name_y) |> 
+  rename(school_name = school_name_x)
+
+data_final
 ```
 
-```{r}
+```{r standardize}
+# data_final <- data_final |>
+#   mutate_at(vars(starts_with('eq'), starts_with('ex'), 
+#                  starts_with('avg'), starts_with('education')), 
+#             ~ . - mean(., na.rm = TRUE)) 
 
+data_final_std <- data_final |>
+  mutate(across(where(is.numeric), ~ scale(.) |> as.vector())) 
+
+# var(data_final_std$education_graduate_or_professional_degree)
+# var(data_final_std$eq_his)
+
+
+rm(data, data_sch_level, test_final)
+
+data_final
+data_final_std
 ```
 
-# Test Measurement Invariance
+# Build Model
 
-```{r}
+```{r remove-non-school-level-vars}
+data_final_schl_lvl <- data_final |>
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct()
 
+data_final_schl_lvl <- data_final_schl_lvl |> 
+  filter(!is.na(avg_pct_met_and_above))
+
+data_final_schl_lvl
+```
+
+```{r standardize}
+data_final_schl_lvl <- data_final_schl_lvl |>
+  mutate(across(where(is.numeric), ~ scale(.) |> as.vector())) 
+```
+
+```{r correlations}
+corrplot(data_final_schl_lvl |>
+           select(starts_with("eq")) |>
+           cor(), 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black")
+
+corrplot(data_final_schl_lvl |>
+           select(starts_with("ex")) |>
+           cor(), 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black")
+
+corrplot(data_final_schl_lvl |>
+           select(starts_with("ex") | starts_with('eq')) |>
+           cor(), 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black")
+
+# eq_his - historical inequities, school
+# eq_hin - historical inequities, neighborhood
+# eq_as - School access
+# eq_pa - Program access
+# ex_ap - Academic Performance
+# ex_scc - School Culture and Climate
+# ex_sel -  Socio-emotional development
+# ex_sd - School discipline
+# ex_att - Attendance
+```
+
+## Measurement Model
+
+```{r cfa}
+cfa1 <- '
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+  excell =~ ex_ap + ex_sd + ex_att + ex_scc + ex_sel
+'
+
+fit1 <- cfa(cfa1, data = data_final_schl_lvl, meanstructure = T)
+
+standardizedsolution(fit1)
+
+
+# Save fits
+fits <- tibble(model = character(),
+               measure = character(), 
+               value = numeric())
+
+fit1_measures <- fitmeasures(fit1, fit.measures = c("chisq", "df", "pvalue",
+                                                    "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("chisq", "df", "pvalue", 
+                     "rmsea", "cfi", "srmr"), 
+         model = 'fit1', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits <- bind_rows(fits, 
+                  fit1_measures)
+
+fit1_measures
+```
+
+```{r coorplot-residuals}
+fit1_residuals <- lavResiduals(fit1)
+# fit1_residuals
+corrplot(fit1_residuals$cov, 
+         method = "color", 
+         tl.col = "black")
+```
+
+## Test Measurement Invariance
+
+```{r view-group-distributions}
+data_final_schl_lvl |> 
+  pivot_longer(cols = starts_with("eq") | starts_with('ex'), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram() + 
+  facet_grid(variable ~ race_most_common) 
+
+# group by White/BIPOC
+data_final_schl_lvl <- data_final_schl_lvl |> 
+  mutate(BIPOC = if_else(race_most_common == "White", "White", "BIPOC")) 
+
+data_final_schl_lvl |> 
+  pivot_longer(cols = starts_with("eq") | starts_with('ex'), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram() + 
+  facet_grid(variable ~ BIPOC)
+```
+
+### Configural
+
+```{r configural-invariance}
+cfa_eq <- '
+  equity =~ eq_his + eq_hin + eq_as + eq_pa
+'
+
+cfa_ex <- '
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+'
+
+
+fit_config <- cfa(cfa_eq,
+                  data = data_final_schl_lvl,
+                  meanstructure = T,
+                  group = "BIPOC")
+
+
+summary(fit_config)
+fitmeasures(fit_config,
+            fit.measures = c("aic", "bic", "chisq", "df", "pvalue",
+                             "rmsea", "cfi", "srmr"))
+```
+
+### Weak
+
+```{r weak-invariance}
+fit_weak <- cfa(cfa_eq, 
+                data = data_final_schl_lvl, 
+                meanstructure = T,
+                group = "BIPOC", 
+                group.equal="loadings")
+
+
+summary(fit_weak)
+fitmeasures(fit_weak,
+            fit.measures = c("aic", "bic", "chisq", "df", "pvalue", 
+                             "rmsea", "cfi", "srmr"))
+anova(fit_weak, fit_config)
+```
+
+### Strong 
+
+```{r strong-invariance}
+fit_strong <- cfa(cfa_eq, 
+                  data = data_final_schl_lvl, 
+                  meanstructure = T, 
+                  group = "BIPOC",
+                  group.equal=c("loadings", "intercepts"))
+
+
+summary(fit_strong)
+fitmeasures(fit_strong,            
+            fit.measures = c("aic", "bic", "chisq", "df", "pvalue", 
+                             "rmsea", "cfi", "srmr"))
+
+anova(fit_strong, fit_config)
+```
+
+### Strict
+
+Considering I lack strong invariance and that is a prerequisite for strict invariance, I don't need to test for strict invariance but do so here for fidelity.
+
+```{r strict-invariance-2}
+fit_strict <- cfa(cfa_eq, 
+                  data = data_final_schl_lvl, 
+                  meanstructure = T, 
+                  group = "BIPOC",
+                  group.equal=c("loadings", "intercepts", "residuals"))
+
+summary(fit_strict)
+fitmeasures(fit_strict,
+            fit.measures = c("aic", "bic", "chisq", "df", "pvalue", 
+                             "rmsea", "cfi", "srmr"))
+
+anova(fit_strict, fit_config)
+```
+
+## SR Model
+
+```{r path-cfa-model-1}
+sem1 <- '
+  # cfa
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  
+  # covariance
+  ex_sel ~~ ex_scc
+  ex_ap ~~ ex_scc
+  ex_ap ~~ eq_his 
+  ex_ap ~~ eq_hin 
+  
+  #hypothesized path
+  
+  avg_pct_met_and_above ~ equity + excell + avg_yrs_ed
+  # + education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+'
+
+fit2 <- sem(sem1, data = data_final_schl_lvl, meanstructure = T)
+
+standardizedsolution(fit2)
+
+fit2_measures <- fitmeasures(fit2, fit.measures = c("chisq", "df", "pvalue", 
+                                   "rmsea", "cfi", "srmr"))  |> 
+  as_tibble() |> 
+  mutate(measure = c("chisq", "df", "pvalue", 
+                     "rmsea", "cfi", "srmr"), 
+         model = 'fit2', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits <- bind_rows(fits, 
+                  fit2_measures)
+
+fit2_measures
+```
+
+```{r fit-2-residuals}
+fit2_residuals <- lavResiduals(fit2)
+# fit2_residuals
+corrplot(fit2_residuals$cov, method = "color", tl.col = "black")
+```
+
+```{r path-cfa-model-3}
+sem2 <- '
+  # cfa
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  
+  # covariance
+  ex_sel ~~ ex_scc
+  ex_ap ~~ ex_scc
+  ex_ap ~~ eq_his
+  ex_ap ~~ eq_hin 
+  
+  #hypothesized path
+  
+  avg_pct_met_and_above ~ equity + excell + avg_yrs_ed
+  # + education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+  equity ~ avg_yrs_ed
+  # education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+  excell ~ avg_yrs_ed
+  # education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+'
+
+fit3 <- sem(sem2, data = data_final_schl_lvl, meanstructure = T)
+
+standardizedsolution(fit3)
+
+fit3_measures <- fitmeasures(fit3, fit.measures = c("chisq", "df", "pvalue", 
+                                   "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("chisq", "df", "pvalue", 
+                     "rmsea", "cfi", "srmr"), 
+         model = 'fit3', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits <- bind_rows(fits, 
+                  fit3_measures)
+
+fit3_measures
+```
+
+```{r fit3-residuals}
+fit3_residuals <- lavResiduals(fit3)
+# fit3_residuals
+corrplot(fit3_residuals$cov, method = "color", tl.col = "black")
+```
+
+## Check Fits
+
+```{r view-fits}
+fits |> 
+  pivot_wider(names_from = measure, 
+              values_from = value)
 ```

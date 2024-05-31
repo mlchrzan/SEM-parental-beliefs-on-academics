@@ -1,0 +1,296 @@
+---
+title: "code_graveyard"
+author: "mlc"
+format: html
+editor: visual
+---
+
+## Build Model (total)
+
+```{r remove-na}
+# data_final |> na.omit()
+data_final <- data_final |> droplevels()
+data_final_std <- data_final_std |> droplevels()
+```
+
+```{r correlations}
+corrplot(data_final_std |>
+           select(starts_with("eq")) |>
+           cor(), 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black")
+
+corrplot(data_final_std |>
+           select(starts_with("ex")) |>
+           cor(), 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black")
+
+corrplot(data_final_std |>
+           select(starts_with("ex") | starts_with('eq')) |>
+           cor(), 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black")
+
+# eq_his - historical inequities, school
+# eq_hin - historical inequities, neighborhood
+# eq_as - School access
+# eq_pa - Program access
+# ex_ap - Academic Performance
+# ex_scc - School Culture and Climate
+# ex_sel -  Socio-emotional development
+# ex_sd - School discipline
+# ex_att - Attendance
+```
+
+## Measurement Model
+
+```{r cfa}
+cfa1 <- '
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+'
+
+fit1 <- cfa(cfa1, data = data_final_std, meanstructure = T)
+
+standardizedsolution(fit1)
+
+
+# Save fits
+fits <- tibble(model = character(),
+               measure = character(), 
+               value = numeric())
+
+fit1_measures <- fitmeasures(fit1, fit.measures = c("chisq", "df", "pvalue",
+                                                    "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("chisq", "df", "pvalue", 
+                     "rmsea", "cfi", "srmr"), 
+         model = 'fit1', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits <- bind_rows(fits, 
+                  fit1_measures)
+
+fit1_measures
+```
+
+```{r coorplot-residuals}
+fit1_residuals <- lavResiduals(fit1)
+# fit1_residuals
+corrplot(fit1_residuals$cov, 
+         method = "color", 
+         tl.col = "black")
+```
+
+## Test Measurement Invariance
+
+```{r configural-invariance}
+cfa_eq <- '
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+'
+
+cfa_ex <- '
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+'
+
+
+fit_config <- cfa(cfa_eq, 
+                  data = data_final_schl_lvl, 
+                  meanstructure = T, 
+                  group = "role_most_common")
+
+
+summary(fit_config)
+fitmeasures(fit_config, 
+            fit.measures = c("aic", "bic", "chisq", "df", "pvalue", 
+                             "rmsea", "cfi", "srmr"))
+```
+
+## SR Model
+
+```{r path-cfa-model-1}
+cfa2 <- '
+  # cfa
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  
+  # covariance
+  ex_sel ~~ ex_scc
+  ex_ap ~~ ex_scc
+  #ex_ap ~~ eq_his # >>> What do we do about negatively correlated??
+  #ex_ap ~~ eq_hin 
+  
+  #hypothesized path
+  
+  avg_pct_met_and_above ~ equity + excell + avg_yrs_ed
+  # + education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+'
+
+fit2 <- sem(cfa2, data = data_final_std, meanstructure = T)
+
+standardizedsolution(fit2)
+
+fit2_measures <- fitmeasures(fit2, fit.measures = c("chisq", "df", "pvalue", 
+                                   "rmsea", "cfi", "srmr"))  |> 
+  as_tibble() |> 
+  mutate(measure = c("chisq", "df", "pvalue", 
+                     "rmsea", "cfi", "srmr"), 
+         model = 'fit2', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits <- bind_rows(fits, 
+                  fit2_measures)
+
+fit2_measures
+```
+
+```{r}
+inspect(fit2, 'residuals')
+
+library(reshape2)
+residuals <- resid(fit2)$cov
+
+# Convert residuals to a data frame
+residuals_df <- as.data.frame(residuals)
+
+# Melt the data frame for ggplot2
+residuals_melted <- melt(residuals_df)
+
+residuals_melted |> 
+  arrange(variable, value) |> 
+  mutate(residual_var = round(value, digits = 4))
+
+# Create histograms of the residuals using ggplot2
+ggplot(residuals_melted, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(title = "Histograms of Residuals", x = "Residual Value", y = "Frequency") +
+  theme_minimal()
+
+rm(residuals, residuals_df)
+```
+
+```{r fit-2-residuals}
+fit2_residuals <- lavResiduals(fit2)
+# fit2_residuals
+corrplot(fit2_residuals$cov, method = "color", tl.col = "black")
+```
+
+```{r path-cfa-model-3}
+cfa3 <- '
+  # cfa
+  equity =~ eq_his + eq_hin + eq_as + eq_pa 
+  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  
+  # covariance
+  ex_sel ~~ ex_scc
+  ex_ap ~~ ex_scc
+  #ex_ap ~~ eq_his # >>> What do we do about negatively correlated??
+  #ex_ap ~~ eq_hin 
+  
+  #hypothesized path
+  
+  avg_pct_met_and_above ~ equity + excell + avg_yrs_ed
+  # + education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+  equity ~ avg_yrs_ed
+  # education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+  excell ~ avg_yrs_ed
+  # education_graduate_or_professional_degree
+  # + education_bachelor_s_degree
+  # + education_associates_or_technical_degree
+  # + education_some_college_but_no_degree 
+  # + education_high_school_diploma_or_ged 
+  # + education_some_high_school_or_less
+  # + education_prefer_not_to_say
+  # + education_decline_to_state
+  
+'
+
+fit3 <- sem(cfa3, data = data_final_std, meanstructure = T)
+
+standardizedsolution(fit3)
+
+fit3_measures <- fitmeasures(fit3, fit.measures = c("chisq", "df", "pvalue", 
+                                   "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("chisq", "df", "pvalue", 
+                     "rmsea", "cfi", "srmr"), 
+         model = 'fit3', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits <- bind_rows(fits, 
+                  fit3_measures)
+
+fit3_measures
+```
+
+```{r fit3-residuals}
+fit3_residuals <- lavResiduals(fit3)
+# fit3_residuals
+corrplot(fit3_residuals$cov, method = "color", tl.col = "black")
+```
+
+## Check Fits
+
+```{r view-fits}
+fits |> 
+  pivot_wider(names_from = measure, 
+              values_from = value)
+```
+
+```{r residual-viz}
+inspect(fit2, 'residuals')
+
+library(reshape2)
+residuals <- resid(fit2)$cov
+
+# Convert residuals to a data frame
+residuals_df <- as.data.frame(residuals)
+
+# Melt the data frame for ggplot2
+residuals_melted <- melt(residuals_df)
+
+residuals_melted |> 
+  arrange(variable, value) |> 
+  mutate(residual_var = round(value, digits = 4))
+
+# Create histograms of the residuals using ggplot2
+ggplot(residuals_melted, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(title = "Histograms of Residuals", x = "Residual Value", y = "Frequency") +
+  theme_minimal()
+
+rm(residuals, residuals_df)
+```
