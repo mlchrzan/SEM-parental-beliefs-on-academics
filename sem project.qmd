@@ -11,10 +11,10 @@ editor: visual
 library(tidyverse)
 library(naniar) # Missing Data
 library(janitor) # clean_names
-
-# From labs
-library(semPlot)
-library(lavaan)
+library(semTools) # meanEq.syntax
+library(sjPlot) # for tables
+library(semPlot) # for path diagram
+library(lavaan) 
 library(semptools)
 library(haven)
 library(labelled)
@@ -193,8 +193,6 @@ data <- sur_long |>
          starts_with("eq"), starts_with("ex"), 
           -equity, -excellence)
 
-rm(sur_long)
-
 data
 ```
 
@@ -238,7 +236,7 @@ data |>
 
 ```{r filter-survey}
 data <- data |> 
-  filter(role == 'Parent/Caregiver' | role == 'School site staff')
+  filter(role == 'Parent/Caregiver')
 ```
 
 ```{r reassign-all-missing}
@@ -473,11 +471,11 @@ corrplot(data_final_schl_lvl |>
 
 ```{r cfa}
 cfa1 <- '
-  equity =~ eq_his + eq_hin + eq_as + eq_pa 
-  excell =~ ex_ap + ex_sd + ex_att + ex_scc + ex_sel
+  equity =~ eq_pa + eq_his + eq_hin + eq_as   
+  excell =~ ex_att + ex_ap + ex_scc + ex_sd + ex_sel
 '
 
-fit1 <- cfa(cfa1, data = data_final_schl_lvl, meanstructure = T)
+fit1 <- cfa(cfa1, data = data_final_schl_lvl)
 
 standardizedsolution(fit1)
 
@@ -507,10 +505,14 @@ fit1_residuals <- lavResiduals(fit1)
 # fit1_residuals
 corrplot(fit1_residuals$cov, 
          method = "color", 
-         tl.col = "black")
+         tl.col = "black", 
+         addCoef.col = "black", 
+         number.cex = 0.85)
 ```
 
 ## Test Measurement Invariance
+
+### Equity
 
 ```{r view-group-distributions}
 data_final_schl_lvl |> 
@@ -526,23 +528,41 @@ data_final_schl_lvl <- data_final_schl_lvl |>
   mutate(BIPOC = if_else(race_most_common == "White", "White", "BIPOC")) 
 
 data_final_schl_lvl |> 
-  pivot_longer(cols = starts_with("eq") | starts_with('ex'), 
+  pivot_longer(cols = starts_with("eq"), 
                names_to = 'variable', 
                values_to = 'value') |> 
   ggplot(aes(x = value)) + 
-  geom_histogram() + 
-  facet_grid(variable ~ BIPOC)
+  geom_histogram(fill = 'blue4') + 
+  geom_vline(xintercept = 0, 
+             color = 'darkred') +
+  facet_grid(variable ~ BIPOC) + 
+  theme_minimal() +
+  labs(title = 'Equity Indicator Distributions by Race', 
+       subtitle= 'White vs. BIPOC racial groups appear to disagree on most indicators of Equity')
+
+data_final_schl_lvl |> 
+  pivot_longer(cols = starts_with('ex'), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram(fill = 'blue4') + 
+  geom_vline(xintercept = 0, 
+             color = 'darkred') +
+  facet_grid(variable ~ BIPOC) + 
+  theme_minimal() +
+  labs(title = 'Excellence Indicator Distributions by Race', 
+       subtitle= 'White vs. BIPOC racial groups appear to differ on most indicators of Excellence')
 ```
 
-### Configural
+#### Configural
 
 ```{r configural-invariance}
 cfa_eq <- '
-  equity =~ eq_his + eq_hin + eq_as + eq_pa
+  equity =~ eq_pa + eq_his + eq_hin + eq_as   
 '
 
 cfa_ex <- '
-  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  excell =~ ex_att + ex_ap + ex_scc + ex_sd + ex_sel
 '
 
 
@@ -554,11 +574,29 @@ fit_config <- cfa(cfa_eq,
 
 summary(fit_config)
 fitmeasures(fit_config,
-            fit.measures = c("aic", "bic", "chisq", "df", "pvalue",
-                             "rmsea", "cfi", "srmr"))
+            fit.measures = c("aic", "bic", "chisq", "df", 
+                             "pvalue", "rmsea", "cfi", "srmr"))
+
+# Save fits
+fits_invar <- tibble(model = character(),
+                     measure = character(), 
+                     value = numeric())
+
+fit_measures_config <- fitmeasures(fit_config,
+                                   fit.measures = c("aic", "bic", "chisq", "df", 
+                                                    "pvalue", "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("aic", "bic" ,"chisq", "df", 
+                     "pvalue", "rmsea", "cfi", "srmr"), 
+         model = 'fit_config', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits_invar <- bind_rows(fits_invar, 
+                        fit_measures_config)
 ```
 
-### Weak
+#### Weak
 
 ```{r weak-invariance}
 fit_weak <- cfa(cfa_eq, 
@@ -572,10 +610,24 @@ summary(fit_weak)
 fitmeasures(fit_weak,
             fit.measures = c("aic", "bic", "chisq", "df", "pvalue", 
                              "rmsea", "cfi", "srmr"))
-anova(fit_weak, fit_config)
+anova(fit_weak, fit_config) 
+
+# Save fits
+fit_measures_weak <- fitmeasures(fit_weak,
+                                 fit.measures = c("aic", "bic", "chisq", "df", 
+                                                  "pvalue", "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("aic", "bic" ,"chisq", "df", 
+                     "pvalue", "rmsea", "cfi", "srmr"), 
+         model = 'fit_weak', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits_invar <- bind_rows(fits_invar, 
+                        fit_measures_weak)
 ```
 
-### Strong 
+#### Strong
 
 ```{r strong-invariance}
 fit_strong <- cfa(cfa_eq, 
@@ -591,9 +643,23 @@ fitmeasures(fit_strong,
                              "rmsea", "cfi", "srmr"))
 
 anova(fit_strong, fit_config)
+
+# Save fits
+fit_measures_strong <- fitmeasures(fit_strong,
+                                   fit.measures = c("aic", "bic", "chisq", "df", 
+                                                    "pvalue", "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("aic", "bic" ,"chisq", "df", 
+                     "pvalue", "rmsea", "cfi", "srmr"), 
+         model = 'fit_strong', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits_invar <- bind_rows(fits_invar, 
+                        fit_measures_strong)
 ```
 
-### Strict
+#### Strict
 
 Considering I lack strong invariance and that is a prerequisite for strict invariance, I don't need to test for strict invariance but do so here for fidelity.
 
@@ -610,42 +676,169 @@ fitmeasures(fit_strict,
                              "rmsea", "cfi", "srmr"))
 
 anova(fit_strict, fit_config)
+
+# Save fits
+fit_measures_strict <- fitmeasures(fit_strict,
+                                   fit.measures = c("aic", "bic", "chisq", "df", 
+                                                    "pvalue", "rmsea", "cfi", "srmr")) |> 
+  as_tibble() |> 
+  mutate(measure = c("aic", "bic" ,"chisq", "df", 
+                     "pvalue", "rmsea", "cfi", "srmr"), 
+         model = 'fit_strict', 
+         value = as.numeric(value)) |> 
+  select(model, measure, value)
+
+fits_invar <- bind_rows(fits_invar, 
+                        fit_measures_strict)
+```
+
+```{r fit-table}
+fits_invar_long <- fits_invar |> 
+  pivot_wider(names_from = measure, 
+              values_from = value) 
+
+fits_invar_long <- fits_invar_long |> 
+  mutate(model = str_remove(model, 'fit_'))
+
+fits_invar_long
+
+fits_invar_long |> 
+  tab_df()
+```
+
+### Excellence
+
+```{r all-invarance-tests}
+# configural
+configural_model <- measEq.syntax(configural.model = cfa_ex, 
+                                  data = data_final_schl_lvl,
+                                  group = "BIPOC",
+                                  group.equal = "configural")
+
+fit_configural_model <- cfa(as.character(configural_model),
+                            data = data_final_schl_lvl, 
+                            meanstructure = T, 
+                            group = "BIPOC")
+
+summary(fit_configural_model)
+
+fit_measures_configural <- fitmeasures(fit_configural_model,
+                                       fit.measures = c("aic", "bic", "chisq",
+                                                        "df", "pvalue",
+                                                        "rmsea", "cfi", "srmr"))
+                       
+# weak
+weak_model <- measEq.syntax(configural.model = cfa_ex, 
+                            data = data_final_schl_lvl,
+                            group = "BIPOC",
+                            group.equal = "loadings")
+
+fit_weak_model <- cfa(as.character(weak_model),
+                      data = data_final_schl_lvl, 
+                      meanstructure = T, 
+                      group = "BIPOC")
+
+summary(fit_weak_model)
+
+fit_measures_weak <- fitmeasures(fit_weak_model,
+                                 fit.measures = c("aic", "bic", "chisq",
+                                                  "df", "pvalue",
+                                                  "rmsea", "cfi", "srmr"))
+
+# strong
+strong_model <- measEq.syntax(configural.model = cfa_ex, 
+                              data = data_final_schl_lvl,
+                              group = "BIPOC",
+                              group.equal = c("loadings", "intercepts"))
+
+fit_strong_model <- cfa(as.character(strong_model),
+                        data = data_final_schl_lvl, 
+                        meanstructure = T, 
+                        group = "BIPOC")
+
+summary(fit_strong_model)
+
+
+fit_measures_strong <- fitmeasures(fit_strong_model,
+                                   fit.measures = c("aic", "bic", "chisq",
+                                                    "df", "pvalue",
+                                                    "rmsea", "cfi", "srmr"))
+
+
+# strict
+strict_model <- measEq.syntax(configural.model = cfa_ex, 
+                                  data = data_final_schl_lvl,
+                                  group = "BIPOC",
+                              group.equal=c("loadings", 
+                                            "intercepts", 
+                                            "residuals", 
+                                            "residual.covariances"))
+fit_strict_model <- cfa(as.character(strict_model),
+                        data = data_final_schl_lvl, 
+                        meanstructure = T, 
+                        group = "BIPOC")
+summary(fit_strict_model)
+
+fit_measures_strict <- fitmeasures(fit_strict_model,
+                                   fit.measures = c("aic", "bic", "chisq",
+                                                    "df", "pvalue",
+                                                    "rmsea", "cfi", "srmr"))
+
+
+fit_table <- round(rbind(fit_measures_configural, fit_measures_weak, 
+                   fit_measures_strong, fit_measures_strict), 3)
+
+fit_table
 ```
 
 ## SR Model
 
+```{r create_dummy_controls}
+data_final_schl_lvl <- data_final_schl_lvl |> clean_names()
+
+# Convert race_most_common to dummy variables
+race_dummies <- model.matrix(~ race_most_common - 1, data = data_final_schl_lvl)
+race_dummies <- as.data.frame(race_dummies)
+
+# Convert lang_most_common to dummy variables
+bipoc_dummies <- model.matrix(~ bipoc - 1, data = data_final_schl_lvl)
+bipoc_dummies <- as.data.frame(bipoc_dummies)
+
+# Convert lang_most_common to dummy variables
+lang_dummies <- model.matrix(~ lang_most_common - 1, data = data_final_schl_lvl)
+lang_dummies <- as.data.frame(lang_dummies)
+
+# Combine dummy variables with the original data
+data_final_schl_lvl <- cbind(data_final_schl_lvl, race_dummies, lang_dummies, bipoc_dummies)
+
+data_final_schl_lvl <- data_final_schl_lvl |> clean_names()
+
+data_final_schl_lvl
+```
+
 ```{r path-cfa-model-1}
 sem1 <- '
   # cfa
-  equity =~ eq_his + eq_hin + eq_as + eq_pa 
-  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  equity =~ eq_pa + eq_his + eq_hin + eq_as   
+  excell =~ ex_att + ex_ap + ex_scc + ex_sd + ex_sel
   
   # covariance
   ex_sel ~~ ex_scc
-  ex_ap ~~ ex_scc
-  ex_ap ~~ eq_his 
-  ex_ap ~~ eq_hin 
+  eq_as ~~ ex_sel
   
   #hypothesized path
   
-  avg_pct_met_and_above ~ equity + excell + avg_yrs_ed
-  # + education_graduate_or_professional_degree
-  # + education_bachelor_s_degree
-  # + education_associates_or_technical_degree
-  # + education_some_college_but_no_degree 
-  # + education_high_school_diploma_or_ged 
-  # + education_some_high_school_or_less
-  # + education_prefer_not_to_say
-  # + education_decline_to_state
+  avg_pct_met_and_above ~ equity + excell + avg_yrs_ed 
   
 '
 
-fit2 <- sem(sem1, data = data_final_schl_lvl, meanstructure = T)
+fit2 <- sem(sem1, data = data_final_schl_lvl)
 
 standardizedsolution(fit2)
 
-fit2_measures <- fitmeasures(fit2, fit.measures = c("chisq", "df", "pvalue", 
-                                   "rmsea", "cfi", "srmr"))  |> 
+fit2_measures <- fitmeasures(fit2, 
+                             fit.measures = c("chisq", "df", "pvalue", 
+                                              "rmsea", "cfi", "srmr"))  |> 
   as_tibble() |> 
   mutate(measure = c("chisq", "df", "pvalue", 
                      "rmsea", "cfi", "srmr"), 
@@ -662,61 +855,35 @@ fit2_measures
 ```{r fit-2-residuals}
 fit2_residuals <- lavResiduals(fit2)
 # fit2_residuals
-corrplot(fit2_residuals$cov, method = "color", tl.col = "black")
+corrplot(fit2_residuals$cov, 
+         method = "color", 
+         tl.col = "black")
 ```
 
-```{r path-cfa-model-3}
+```{r path-cfa-model-2}
 sem2 <- '
   # cfa
-  equity =~ eq_his + eq_hin + eq_as + eq_pa 
-  excell =~ ex_ap + ex_scc + ex_sel + ex_sd + ex_att
+  equity =~ eq_pa + eq_his + eq_hin + eq_as   
+  excell =~ ex_att + ex_ap + ex_scc + ex_sd + ex_sel
   
   # covariance
   ex_sel ~~ ex_scc
-  ex_ap ~~ ex_scc
-  ex_ap ~~ eq_his
-  ex_ap ~~ eq_hin 
+  eq_as ~~ ex_sel
   
-  #hypothesized path
-  
+  # hypothesized paths
   avg_pct_met_and_above ~ equity + excell + avg_yrs_ed
-  # + education_graduate_or_professional_degree
-  # + education_bachelor_s_degree
-  # + education_associates_or_technical_degree
-  # + education_some_college_but_no_degree 
-  # + education_high_school_diploma_or_ged 
-  # + education_some_high_school_or_less
-  # + education_prefer_not_to_say
-  # + education_decline_to_state
-  
   equity ~ avg_yrs_ed
-  # education_graduate_or_professional_degree
-  # + education_bachelor_s_degree
-  # + education_associates_or_technical_degree
-  # + education_some_college_but_no_degree 
-  # + education_high_school_diploma_or_ged 
-  # + education_some_high_school_or_less
-  # + education_prefer_not_to_say
-  # + education_decline_to_state
-  
   excell ~ avg_yrs_ed
-  # education_graduate_or_professional_degree
-  # + education_bachelor_s_degree
-  # + education_associates_or_technical_degree
-  # + education_some_college_but_no_degree 
-  # + education_high_school_diploma_or_ged 
-  # + education_some_high_school_or_less
-  # + education_prefer_not_to_say
-  # + education_decline_to_state
   
 '
 
-fit3 <- sem(sem2, data = data_final_schl_lvl, meanstructure = T)
+fit3 <- sem(sem2, data = data_final_schl_lvl)
 
 standardizedsolution(fit3)
 
-fit3_measures <- fitmeasures(fit3, fit.measures = c("chisq", "df", "pvalue", 
-                                   "rmsea", "cfi", "srmr")) |> 
+fit3_measures <- fitmeasures(fit3, 
+                             fit.measures = c("chisq", "df", "pvalue", 
+                                              "rmsea", "cfi", "srmr")) |> 
   as_tibble() |> 
   mutate(measure = c("chisq", "df", "pvalue", 
                      "rmsea", "cfi", "srmr"), 
@@ -727,19 +894,557 @@ fit3_measures <- fitmeasures(fit3, fit.measures = c("chisq", "df", "pvalue",
 fits <- bind_rows(fits, 
                   fit3_measures)
 
+
+sjPlot::tab_df(standardizedsolution(fit3), 
+               title = "Whole Model Estimates")
+
+sjPlot::tab_df(standardizedsolution(fit3) |> filter(op == '=~'), 
+               title = "CFA Estimates")
+
+sjPlot::tab_df(standardizedsolution(fit3) |> filter(op == '~~'), 
+               title = "Covariance Estimates")
+
+sjPlot::tab_df(standardizedsolution(fit3) |> filter(op == '~'), 
+               title = "Path Estimates")
+
 fit3_measures
 ```
 
 ```{r fit3-residuals}
 fit3_residuals <- lavResiduals(fit3)
 # fit3_residuals
-corrplot(fit3_residuals$cov, method = "color", tl.col = "black")
+corrplot(fit3_residuals$cov, 
+         method = "color", 
+         tl.col = "black")
 ```
 
 ## Check Fits
 
 ```{r view-fits}
-fits |> 
+fits_final <- fits |> 
   pivot_wider(names_from = measure, 
               values_from = value)
+
+fits_final <- fits_final |> 
+  mutate(model = case_when(model == 'fit1' ~ 'CFA Model', 
+                           model == 'fit2' ~ 'CFA + Path', 
+                           model == 'fit3' ~ "CFA + Path w/ Mediation"))
+
+sjPlot::tab_df(fits_final)
+fits_final
+```
+
+```{r all-solutions}
+all_sols <- standardizedSolution(fit1) |> 
+  select(lhs:se, pvalue) |> 
+  full_join(standardizedsolution(fit2) |> select(lhs:se, pvalue), 
+            by = join_by(lhs, op, rhs)) |> 
+  full_join(standardizedsolution(fit3) |> select(lhs:se, pvalue), 
+            by = join_by(lhs, op, rhs))
+
+all_sols <- all_sols |> 
+  mutate(model_part = str_c(lhs, " ", op, " ", rhs)) |> 
+  select(model_part, everything(), -lhs, -op, -rhs) |>
+  mutate(across(where(is.numeric), ~round(., digits = 3))) |> 
+  mutate(across(everything(), as.character)) |> 
+  mutate(across(everything(), ~if_else(is.na(.), "", .)))
+
+add_stars <- function(p) {
+  if (p < 0.001) {
+    return("***")
+  } else if (p < 0.01) {
+    return("**")
+  } else if (p < 0.05) {
+    return("*")
+  } else {
+    return("")
+  }
+}
+
+all_sols$sig.x <- sapply(all_sols$pvalue.x, add_stars)
+all_sols$sig.y <- sapply(all_sols$pvalue.y, add_stars)
+all_sols$sig <- sapply(all_sols$pvalue, add_stars)
+
+all_sols <- all_sols |> 
+  mutate(est.std.x = if_else(est.std.x != "", 
+                             str_c(est.std.x, sig.x), 
+                             ""), 
+         est.std.y = if_else(est.std.y != "", 
+                             str_c(est.std.y, sig.y), 
+                             ""), 
+         est.std = if_else(est.std != "", 
+                             str_c(est.std, sig), 
+                             ""),
+         est.std.x = if_else(est.std.x == "1", 
+                             '1', 
+                             est.std.x), 
+         est.std.y = if_else(est.std.y == "1", 
+                             '1', 
+                             est.std.y), 
+         est.std = if_else(est.std == "1", 
+                             '1', 
+                             est.std)) |> 
+  mutate(across(starts_with("est"), ~if_else(. == '1***', "1", .))) |> 
+  select(model_part, starts_with('est')) 
+
+all_sols
+
+sjPlot::tab_df(all_sols, 
+               col.header = c("Model Part", 
+                              "Mod 1 Est",  
+                              "Mod 2 Est", 
+                              "Mod 3 Est"))
+```
+
+## Direct and Indirect Effects
+
+```{r effects}
+sem3 <- '
+    # cfa
+  equity =~ eq_pa + eq_his + eq_hin + eq_as   
+  excell =~ ex_att + ex_ap + ex_scc + ex_sd + ex_sel
+  
+  # covariance
+  ex_sel ~~ ex_scc
+  eq_as ~~ ex_sel
+
+  # direct path
+  avg_pct_met_and_above ~ b1*equity + c1*excell + a*avg_yrs_ed
+  
+  # mediator paths
+  equity ~ b2*avg_yrs_ed
+  excell ~ c2*avg_yrs_ed
+
+  # direct, indirect, and total effects
+  direct_ed :=  a
+  direct_eq := b2
+  direct_ex := c2
+  direct_tot := a + b2 + c2
+  indirect_equity := b1*b2
+  indirect_excellence := c1*c2
+  total_indirect := b1*b2 + c1*c2
+  total := a + b1*b2 + c1*c2
+
+'
+
+fit4 <- sem(sem3, data = data_final_schl_lvl)
+fitmeasures(fit4, 
+            fit.measures = c("chisq", "df", "pvalue", 
+                             "rmsea", "cfi", "srmr"))
+
+effects <-  standardizedsolution(fit4) |> slice_tail(n = 8) |> select(label:pvalue)
+
+effects$stars <- sapply(effects$pvalue, add_stars)
+effects <- effects |> 
+  mutate(est.std = str_c(round(est.std, digits = 3), stars)) |> 
+  select(label, est.std, se, z, pvalue) |> 
+  mutate(label = case_when(label == 'direct_ed' ~ "Direct (Years of Education)",  
+                           label == 'direct_eq' ~ "Direct (Equity)",
+                           label == 'direct_ex' ~ "Direct (Excellence)", 
+                           label == 'direct_tot' ~ "Direct (Total)", 
+                           label == 'indirect_equity' ~ "Indirect (Equity)", 
+                           label == 'indirect_excellence' ~ "Indirect (Excellence)", 
+                           label == 'total_indirect' ~ "Indirect (Total)", 
+                           label == 'total' ~ "Total"))
+
+effects |> tab_df(col.header = c("Effect", 
+                                 "Estimate", 
+                                 "SE", 
+                                 "z-score", 
+                                 'p-value'))
+
+effects
+```
+
+## Plot
+
+```{r path-diagram}
+layout <- layout_matrix(avg_yrs_ed = c(3, 1),
+                        equity = c(2, 4),
+                        eq_his = c(1, 2),
+                        eq_hin = c(1, 3),
+                        eq_as = c(1, 5),
+                        eq_pa = c(1, 6),
+                        excell = c(4, 4),
+                        ex_ap = c(5, 2),
+                        ex_scc = c(5, 3),
+                        ex_sel = c(5, 5),
+                        ex_sd = c(5, 6),
+                        ex_att = c(5, 7),
+                        avg_pct_met_and_above = c(3,6))
+
+plot_no_ests <- semPaths(fit3, 
+                         what = 'std',
+                         nCharNodes = 0, 
+                         nCharEdges = 0,
+                         layout = layout)
+
+
+plot(change_node_label(plot_no_ests, 
+                       c(avg_yrs_ed = "Years\nof Education",
+                         equity = 'Equity',
+                         eq_his = "Historical\nInequality,\nSchool",
+                         eq_hin = "Historical\nInequality,\nNeighborhood",
+                         eq_as = "School\nAccess",
+                         eq_pa = "Program\nAccess",
+                         excell = 'Excellence',
+                         ex_ap = "Academic\nPerformance",
+                         ex_scc = "School Climate\nand Culture",
+                         ex_sel = "Social-Emotional\nLearning",
+                         ex_sd = "School\nDiscipline",
+                         ex_att = "Attendance",
+                         avg_pct_met_and_above = "Percent Met\nand Above"), 
+                       label.cex = 2))
+```
+
+```{r result-diagram-color}
+plot_ests <- semPaths(fit3, 
+                      what = 'std',
+                      #whatLabels = 'est',
+                      edge.label.cex = 1.2,
+                      nCharNodes = 0, 
+                      nCharEdges = 0,
+                      layout = layout)
+
+plot_sig <- mark_sig(plot_ests, fit3)
+
+plot(change_node_label(plot_sig, 
+                       c(avg_yrs_ed = "Years\nof Education",
+                         equity = 'Equity',
+                         eq_his = "Historical\nInequality,\nSchool",
+                         eq_hin = "Historical\nInequality,\nNeighborhood",
+                         eq_as = "School\nAccess",
+                         eq_pa = "Program\nAccess",
+                         excell = 'Excellence',
+                         ex_ap = "Academic\nPerformance",
+                         ex_scc = "School Climate\nand Culture",
+                         ex_sel = "Social-Emotional\nLearning",
+                         ex_sd = "School\nDiscipline",
+                         ex_att = "Attendance",
+                         avg_pct_met_and_above = "Percent Met\nand Above"), 
+                       label.cex = 2)) 
+```
+
+## Other viz for paper
+
+```{r outcome-normality}
+data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |> 
+  ggplot(aes(x = avg_pct_met_and_above)) + 
+  geom_histogram(bins = 15, 
+                 fill = 'blue4') + 
+  theme_minimal() + 
+  labs(title = 'Outcome Variable Distribution', 
+       subtitle = 'Unstandardized Values',
+       x = "Average Percentage of Students Whose Scores are At or Above Proficient")
+```
+
+```{r dists-for-indicators}
+stats_table <- data_final |>
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct()
+
+stats_table <- stats_table |> 
+  filter(!is.na(avg_pct_met_and_above))
+
+stats_table |> 
+  pivot_longer(cols = starts_with('eq') | starts_with('ex'),
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram(fill = 'blue4', bins = 30) + 
+  facet_wrap(~variable) +
+  theme_sjplot() +
+  labs(title = 'CFA Indicator Distributions for Equity (eq) and Excellence (ex)')
+```
+
+```{r descp-stats}
+stats_table <- data_final |>
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct()
+
+stats_table <- stats_table |> 
+  filter(!is.na(avg_pct_met_and_above))
+
+stats_table <- stats_table |> 
+  select(school_name, avg_yrs_ed, eq_his:ex_att, avg_pct_met_and_above) |> 
+  pivot_longer(cols = where(is.numeric),
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  group_by(variable) |> 
+  summarize(Mean = mean(value, na.rm = T),
+            Median = median(value, na.rm = T),
+            SD = sd(value, na.rm = T), 
+            Min = min(value, na.rm = T),
+            Max = max(value, na.rm = T))
+
+stats_table <- stats_table |> rename(label = variable)
+stats_table <- stats_table |> 
+  mutate(variable = case_when(label == 'avg_pct_met_and_above' ~ 'Average % Proficient or Higher (outcome)', 
+                              label == 'avg_yrs_ed' ~ "Average Years of Education (exogenous)",
+                              label == 'eq_as' ~ "School Access (equity)",
+                              label == 'eq_hin' ~ "Historical Inequities - Neighborhood (equity)",
+                              label == 'eq_his' ~ "Historical Inequities - School (equity)",
+                              label == 'eq_pa' ~ "Program Access (equity)",
+                              label == 'ex_ap' ~ "Academic Performance (excellence)",
+                              label == 'ex_att' ~ "Attendance (excellence)",
+                              label == 'ex_scc' ~ "School Culture and Climate (excellence)",
+                              label == 'ex_sd' ~ "School Discipline (excellence)",
+                              label == 'ex_sel' ~ "Social-Emotional Learning (excellence)"))
+
+stats_table <- stats_table |> 
+  select(variable, label, everything())
+
+sjPlot::tab_df(stats_table)
+stats_table
+```
+
+```{r survey-demographics}
+role_breakdown <- sur_long |> 
+  group_by(role) |> 
+  summarize(n_role = n(), 
+            pct_role = n_role/8477, 
+            .groups = 'drop') |> 
+  arrange(desc(n_role))
+
+
+demo_breakdown <- sur_long |> 
+  pivot_longer(cols = c(education, role, race), 
+               names_to = 'attribute', 
+               values_to = 'value') |> 
+  group_by(attribute, value) |> 
+  summarize(n = n(),
+            pct = n/8477, 
+            .groups = 'drop') |> 
+  arrange(attribute, desc(n), value)
+
+sjPlot::tab_df(demo_breakdown, 
+               col.header = c("Attribute Group" ,
+                              "Respondent Attribute", 
+                              "Number of Respondents", 
+                              "Percent of Sample"))
+
+demo_breakdown
+```
+
+```{r race-group-breakdown}
+race_breakdown <- data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |> 
+  pivot_longer(cols = starts_with("race") & !contains("common"), 
+               names_to = 'racial_group', 
+               values_to = 'count') |> 
+  mutate(racial_group = str_remove(racial_group, "race_"), 
+         racial_group = str_replace_all(racial_group, "_", " "), 
+         racial_group = case_when(racial_group == 'african american' ~ "African-American",
+                                  racial_group == 'american indian or alaskan native' ~ "American Indian or Alaskan Native",
+                                  racial_group == 'asian' ~ "Asian",
+                                  racial_group == 'filipino' ~ "Filipino",
+                                  racial_group == 'hispanic latino' ~ "Hispanic/Latino",
+                                  racial_group == 'pacific islander' ~ "Pacific Islander",
+                                  racial_group == 'two or more races' ~ "Two or More Races",
+                                  racial_group == "white" ~ "White",)) |> 
+  group_by(racial_group) |> 
+  summarize(total = sum(count, na.rm = T)) |> 
+  ungroup()
+  
+sum(race_breakdown$total)
+sjPlot::tab_df(race_breakdown, 
+               col.header = c("Racial Group",
+                              "Total in Final Sample"), 
+               footnote = 'n = 4157', 
+               show.footnote = T)
+race_breakdown
+```
+
+```{r white-v-bipoc}
+race_breakdown |> 
+  mutate(race_cat = if_else(racial_group == 'White', "White", "BIPOC")) |> 
+  group_by(race_cat) |> 
+  summarize(total = sum(total)) |> 
+  tab_df(col.header = c("Race Category", 
+                        "Total in Final Sample"), 
+               footnote = 'n = 4157', 
+               show.footnote = T)
+```
+
+```{r race-most-common-breakdown}
+race_breakdown <- data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |> 
+  group_by(race_most_common) |> 
+  summarize(total = n()) |> 
+  ungroup()
+  
+sum(race_breakdown$total)
+sjPlot::tab_df(race_breakdown, 
+               col.header = c("Racial Group",
+                              "Total in Final Sample"), 
+               footnote = 'n = 99', 
+               show.footnote = T)
+race_breakdown
+```
+
+```{r white-v-BIPOC}
+race_breakdown |> 
+  mutate(race_cat = if_else(race_most_common == 'White', "White", "BIPOC")) |> 
+  group_by(race_cat) |> 
+  summarize(total = sum(total)) |> 
+  tab_df(col.header = c("Race Category", 
+                        "Total in Final Sample"), 
+               footnote = 'n = 99', 
+               show.footnote = T)
+```
+
+```{r yrs-ed-distribution}
+data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  ggplot(aes(x = avg_yrs_ed)) + 
+  geom_histogram(bins = 10, fill = 'blue4') + 
+  geom_vline(xintercept = 12, 
+             color = 'skyblue2', 
+             linewidth = 1.25) +
+  annotate("text", 
+           x = 11.5,
+           y = 22, 
+           label = "Completed\nHigh School", 
+           color = 'skyblue3', 
+           fontface = 'italic', 
+           angle = 90) +
+  geom_vline(xintercept = 16, 
+             color = 'skyblue2', 
+             linewidth = 1.25) +
+  annotate("text", 
+           x = 15.5,
+           y = 22, 
+           label = "Completed\nBachelor's", 
+           color = 'skyblue3', 
+           fontface = 'italic', 
+           angle = 90) +
+  theme_minimal() + 
+  labs(title = 'Dependent Variable Distribution', 
+       subtitle = 'Unstandardized Values',
+       x = "Average Years of Education", 
+       y = 'count')
+```
+
+```{r measure-invariance-dists}
+data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  mutate(BIPOC = if_else(race_most_common == "White", "White", "BIPOC")) |> 
+  pivot_longer(cols = starts_with("eq"), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  group_by(variable) |> 
+  mutate(avg = mean(value, na.rm = T)) |> 
+  ungroup() |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram(fill = 'blue4', bins = 20) + 
+  facet_grid(variable ~ BIPOC) + 
+  geom_vline(aes(xintercept = avg), 
+             color = 'red3', 
+             linewidth = 1.25) +
+  theme_sjplot() +
+  labs(title = 'Equity Indicator Distributions by Race', 
+       subtitle= 'White vs. BIPOC racial groups appear to differ on most indicators of Equity,\nwith BIPOC schools having more responses higher than the mean on three items')
+
+data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  mutate(BIPOC = if_else(race_most_common == "White", "White", "BIPOC")) |> 
+  pivot_longer(cols = starts_with('ex'), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  group_by(variable) |> 
+  mutate(avg = mean(value, na.rm = T)) |> 
+  ungroup() |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram(fill = 'blue4', bins = 16) + 
+  facet_grid(variable ~ BIPOC) + 
+  geom_vline(aes(xintercept = avg), 
+             color = 'red3', 
+             linewidth = 1.25) +
+  theme_sjplot() +
+  labs(title = 'Excellence Indicator Distributions by Race', 
+       subtitle= 'White vs. BIPOC racial groups appear to differ on 2 out of 5 indicators of Excellence,\n Attendance and School Discipline')
+```
+
+```{r relations-on-outcome}
+plot1 <- data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  ggplot(aes(x = avg_yrs_ed, 
+             y = avg_pct_met_and_above)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm') +
+  stat_cor(label.x = 5,
+           label.y = 80) +
+  theme_minimal() +
+  labs(title = 'Relationship Between Exogenous Variable and Outcome Variable', 
+       x = 'Average Years of Parental Education', 
+       y = 'Percent of Students Meeting or Exceeding Test Standards')
+
+plot2 <- data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  pivot_longer(cols = starts_with('eq'), 
+               names_to = 'indicator', 
+               values_to = 'value') |> 
+  ggplot(aes(x = value, 
+             y = avg_pct_met_and_above)) +
+  geom_point(alpha = 0.5) + 
+  geom_smooth(method = 'lm') + 
+  stat_cor(label.x = 2,
+           label.y = -15) +
+  facet_wrap(~indicator) +
+  theme_minimal() +
+  labs(title = 'Relationship Between Equity Indicators and Outcome Variable', 
+       x = 'Likert Value', 
+       y = 'Percent of Students Meeting or Exceeding Test Standards')
+
+plot3 <- data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  pivot_longer(cols = starts_with('ex'), 
+               names_to = 'indicator', 
+               values_to = 'value') |> 
+  ggplot(aes(x = value, 
+             y = avg_pct_met_and_above)) +
+  geom_point(alpha = 0.5) + 
+  geom_smooth(method = 'lm') + 
+  stat_cor(label.x = 3,
+           label.y = -15) +
+  facet_wrap(~indicator) +
+  theme_minimal() +
+  labs(title = 'Relationship Between Excellence Indicators and Outcome Variable', 
+       x = 'Likert Value', 
+       y = 'Percent of Students Meeting or Exceeding Test Standards')
+
+ggsave("exo-vs-outcome.png", plot1, 
+       width = 8, height = 4.5, dpi = 1200, 
+       bg = 'white')
+
+ggsave("eq-indicators-vs-outcome.png", plot2, 
+       width = 8, height = 4.5, dpi = 1200, 
+       bg = 'white')
+
+ggsave("ex-indicators-vs-outcome.png", plot3, 
+       width = 8, height = 4.5, dpi = 1200, 
+       bg = 'white')
+
+plot1
+plot2
+plot3
 ```
