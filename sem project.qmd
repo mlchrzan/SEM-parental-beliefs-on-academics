@@ -75,7 +75,7 @@ tests <- clean_names(tests)
 ```
 
 ```{r join-testing-data}
-# Filter School info to just SFUSD schools
+# Filter School info to just district schools
 # unique(test_scores$district_code)
 schools <- schools |> 
   filter(district_code == 68478)
@@ -258,18 +258,18 @@ data <- data |>
 data
 ```
 
-```{r get-SFUSD-sch-codes, message=FALSE}
-sfusd_sch_data <- read_csv("UD_tblSSSI_20240503_130132.csv")
+```{r get-sch-codes, message=FALSE}
+sch_data <- read_csv("UD_tblSSSI_20240503_130132.csv")
 
 # Select Needed Variables
-sfusd_sch_data <- sfusd_sch_data |> 
+sch_data <- sch_data |> 
   select(FULLNAME, CDS_COUNTY, CDS_DISTRICT, CDS_SCHOOL, ZIPCODE)
 
 # Join
-data <- left_join(data, sfusd_sch_data, 
+data <- left_join(data, sch_data, 
                   by = join_by(school == FULLNAME))
 
-rm(sfusd_sch_data)
+rm(sch_data)
 
 # Rename variables for future join
 data <- data |> 
@@ -1447,4 +1447,55 @@ ggsave("ex-indicators-vs-outcome.png", plot3,
 plot1
 plot2
 plot3
+```
+
+```{r measure-invariance-dists}
+data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  mutate(BIPOC = if_else(race_most_common == "White", "White", "BIPOC")) |> 
+  pivot_longer(cols = starts_with("eq"), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  group_by(variable) |> 
+  mutate(avg = mean(value, na.rm = T)) |> 
+  ungroup() |> 
+  ggplot(aes(x = value)) +
+  geom_density(aes(fill = BIPOC), 
+               alpha = 0.5) +
+  scale_fill_manual(values = c('skyblue3', 'orange2')) +
+  facet_wrap(~fct_reorder(variable, avg), 
+             ncol = 1, 
+             scales = 'free_y') +
+  geom_vline(aes(xintercept = avg), 
+             color = 'red3', 
+             linewidth = 1.25) +
+  theme_minimal() +
+  labs(title = 'Equity Indicator Distributions by Race', 
+       subtitle= 'White vs. BIPOC racial groups appear to differ on most indicators of Equity,\nwith BIPOC schools having more responses higher than the mean on three items')
+
+data_final |> 
+  select(school_name:district_name, starts_with('avg')) |> 
+  distinct() |> 
+  filter(!is.na(avg_pct_met_and_above)) |>
+  mutate(BIPOC = if_else(race_most_common == "White", "White", "BIPOC")) |> 
+  pivot_longer(cols = starts_with('ex'), 
+               names_to = 'variable', 
+               values_to = 'value') |> 
+  group_by(variable) |> 
+  mutate(avg = mean(value, na.rm = T)) |> 
+  ungroup() |> 
+  ggplot(aes(x = value)) + 
+  geom_density(aes(fill = BIPOC), 
+               alpha = 0.5) +
+  scale_fill_manual(values = c('skyblue3', 'orange2')) +
+  facet_wrap(~ fct_reorder(variable, avg), 
+             ncol = 1) + 
+  geom_vline(aes(xintercept = avg), 
+             color = 'red3', 
+             linewidth = 1.25) +
+  theme_minimal() +
+  labs(title = 'Excellence Indicator Distributions by Race', 
+       subtitle= 'White vs. BIPOC racial groups appear to differ on 2 out of 5 indicators of Excellence,\nAttendance and School Discipline')
 ```
